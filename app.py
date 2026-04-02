@@ -32,6 +32,8 @@ DEFAULT_EXAMPLE = """sample1_age,sample1_sigma,sample2_age,sample2_sigma
 
 if "input_text" not in st.session_state:
     st.session_state.input_text = DEFAULT_EXAMPLE
+if "grid_df" not in st.session_state:
+    st.session_state.grid_df = None
 
 
 @st.cache_data
@@ -262,32 +264,65 @@ with st.container(border=True):
     with col4:
         run = st.button("Plot and calculate", type="primary", use_container_width=True)
 
-    st.text_area(
-        "Paste table (Excel-friendly)",
-        height=250,
-        key="input_text",
-        placeholder="Paste directly from Excel or CSV/TSV.",
-    )
+    tab_paste, tab_grid = st.tabs(["Paste data", "Spreadsheet editor"])
+
+    with tab_paste:
+        st.text_area(
+            "Paste table (Excel-friendly)",
+            height=250,
+            key="input_text",
+            placeholder="Paste directly from Excel or CSV/TSV.",
+        )
+        p1, p2, p3 = st.columns([1.2, 1, 2.8])
+        with p1:
+            if st.button("Build spreadsheet from paste", use_container_width=True):
+                try:
+                    st.session_state.grid_df = parse_table(st.session_state.input_text)
+                    st.success("Pasted table loaded into spreadsheet editor.")
+                except Exception as exc:
+                    st.error(f"Could not parse pasted text: {exc}")
+        with p2:
+            if st.button("Load example to grid", use_container_width=True):
+                st.session_state.input_text = DEFAULT_EXAMPLE
+                st.session_state.grid_df = parse_table(DEFAULT_EXAMPLE)
+                st.rerun()
+
+    with tab_grid:
+        if st.session_state.grid_df is None:
+            try:
+                st.session_state.grid_df = parse_table(st.session_state.input_text)
+            except Exception:
+                st.session_state.grid_df = pd.DataFrame(columns=["age", "sigma"])
+
+        st.caption("Excel-like input table: click any cell and paste from Excel. You can also add/remove rows.")
+        st.session_state.grid_df = st.data_editor(
+            st.session_state.grid_df,
+            num_rows="dynamic",
+            use_container_width=True,
+            hide_index=True,
+            key="excel_like_grid",
+        )
 
     a, b, c = st.columns([1, 1, 3])
     with a:
         if st.button("Clear", use_container_width=True):
             st.session_state.input_text = ""
+            st.session_state.grid_df = pd.DataFrame(columns=["age", "sigma"])
             st.rerun()
     with b:
         if st.button("Load example", use_container_width=True):
             st.session_state.input_text = DEFAULT_EXAMPLE
+            st.session_state.grid_df = parse_table(DEFAULT_EXAMPLE)
             st.rerun()
 
-text = st.session_state.input_text
+
 summary_rows = []
 forest_fig = None
 
 if run:
-    try:
-        df = parse_table(text)
-    except Exception as exc:
-        st.error(f"Could not parse table: {exc}")
+    df = st.session_state.grid_df.copy() if st.session_state.grid_df is not None else pd.DataFrame()
+    if df.empty:
+        st.error("Input table is empty. Paste data or add rows in the spreadsheet editor.")
         st.stop()
 
     st.subheader("Parsed input preview")
