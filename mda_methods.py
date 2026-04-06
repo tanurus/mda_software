@@ -235,11 +235,20 @@ def mda_mla(ages: np.ndarray, max_age: float = 600) -> Dict:
         candidates.append((bic, k, youngest))
 
     bic, best_k, youngest = sorted(candidates, key=lambda r: r[0])[0]
+
+    # Re-fit best model to extract covariance of the youngest component
+    best_model = GaussianMixture(n_components=best_k, random_state=0)
+    best_model.fit(X)
+    youngest_idx = int(np.argmin(best_model.means_.flatten()))
+    youngest_std = float(np.sqrt(best_model.covariances_[youngest_idx].flatten()[0]))
+
     return {
         "abbrev": "MLA",
         "age": youngest,
+        "age_2sigma": float(2 * youngest_std),
         "components": int(best_k),
         "bic": float(bic),
+        "N": int(len(a)),
         "used_n": int(len(a)),
         "note": "GMM-BIC approximation to IsoplotR youngest component",
     }

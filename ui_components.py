@@ -8,6 +8,8 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+from handsontable_grid import handsontable_grid
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -23,8 +25,8 @@ sample1_age,sample1_sigma,sample2_age,sample2_sigma
 535.77,11.16,590.1,7.8
 """
 
-_EMPTY_ROWS = 30
-_EMPTY_COLS = 14
+_EMPTY_ROWS = 100
+_EMPTY_COLS = 26
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -41,44 +43,43 @@ def _col_letter(idx: int) -> str:
     return result
 
 
-def _make_empty_grid(n_rows: int = _EMPTY_ROWS, n_cols: int = _EMPTY_COLS) -> pd.DataFrame:
-    """Create an empty DataFrame with Excel-style column letters."""
-    cols = [_col_letter(i) for i in range(n_cols)]
-    return pd.DataFrame(
-        np.nan,
-        index=range(1, n_rows + 1),
-        columns=cols,
-    )
+def _make_empty_grid_data(n_rows: int = _EMPTY_ROWS, n_cols: int = _EMPTY_COLS) -> list:
+    """Create an empty 2D list for Handsontable (all None)."""
+    return [[None] * n_cols for _ in range(n_rows)]
 
 
-def _df_to_lettered(df: pd.DataFrame) -> pd.DataFrame:
-    """Convert any DataFrame to one with Excel-style column letters, keeping the
-    original header names as the first data row."""
-    n_cols = len(df.columns)
-    letters = [_col_letter(i) for i in range(n_cols)]
+def _df_to_grid_data(df: pd.DataFrame) -> list:
+    """Convert a DataFrame to a 2D list for Handsontable.
+    Row 0 = column headers, rows 1+ = data values.
+    Pads with empty columns/rows to fill at least _EMPTY_COLS × _EMPTY_ROWS."""
+    n_cols = max(len(df.columns), _EMPTY_COLS)
+    header = list(df.columns) + [None] * (n_cols - len(df.columns))
+    rows = [header]
+    for _, row in df.iterrows():
+        vals = row.tolist()
+        # Convert NaN/NaT to None for JSON serialisation
+        vals = [None if (isinstance(v, float) and np.isnan(v)) else v for v in vals]
+        vals += [None] * (n_cols - len(vals))
+        rows.append(vals)
+    # Pad to minimum row count
+    while len(rows) < _EMPTY_ROWS:
+        rows.append([None] * n_cols)
+    return rows
 
-    # Original headers become first data row
-    header_row = pd.DataFrame([df.columns.tolist()], columns=letters)
-    data = df.copy()
-    data.columns = letters
-    data = data.reset_index(drop=True)
-    combined = pd.concat([header_row, data], ignore_index=True)
-    combined.index = range(1, len(combined) + 1)
-    return combined
 
-
-def _lettered_to_original(df: pd.DataFrame) -> pd.DataFrame:
-    """Restore a lettered DataFrame: row 1 = header names, rest = data."""
-    if df.empty or len(df) < 2:
-        return df
-    headers = df.iloc[0].tolist()
-    data = df.iloc[1:].copy()
-    data.columns = headers
-    data = data.reset_index(drop=True)
+def _grid_data_to_df(data: list) -> pd.DataFrame:
+    """Convert 2D list (from Handsontable) back to a DataFrame.
+    Row 0 = headers, rest = data.  Drops fully-empty columns and rows."""
+    if not data or len(data) < 2:
+        return pd.DataFrame()
+    headers = [str(h) if h is not None else f"col_{i}" for i, h in enumerate(data[0])]
+    rows = data[1:]
+    df = pd.DataFrame(rows, columns=headers)
     # Drop fully-empty columns and rows
-    data = data.dropna(axis=1, how="all")
-    data = data.dropna(axis=0, how="all")
-    return data
+    df = df.replace("", np.nan)
+    df = df.dropna(axis=1, how="all")
+    df = df.dropna(axis=0, how="all")
+    return df
 
 
 @st.cache_data
@@ -128,19 +129,6 @@ CUSTOM_CSS = """
     color: white;
 }
 
-/* Spreadsheet grid tweaks */
-[data-testid="stDataEditor"] {
-    border: 1px solid #e2e8f0;
-    border-radius: 6px;
-}
-
-/* Toolbar buttons row */
-.toolbar-row {
-    display: flex;
-    gap: 0.4rem;
-    margin-top: 0.5rem;
-}
-
 /* Footer */
 .app-footer {
     text-align: center;
@@ -150,30 +138,14 @@ CUSTOM_CSS = """
     border-top: 1px solid #e2e8f0;
     margin-top: 2rem;
 }
-.app-footer a {
-    color: #0f766e;
-    text-decoration: none;
-}
-.app-footer a:hover {
-    text-decoration: underline;
-}
+.app-footer a { color: #0f766e; text-decoration: none; }
+.app-footer a:hover { text-decoration: underline; }
 
 /* Section dividers */
 .section-divider {
-    border: 0;
-    height: 1px;
+    border: 0; height: 1px;
     background: linear-gradient(to right, transparent, #cbd5e1, transparent);
     margin: 1.5rem 0;
-}
-
-/* Method info cards */
-.method-card {
-    background: #f8fafc;
-    border: 1px solid #e2e8f0;
-    border-radius: 8px;
-    padding: 0.8rem 1rem;
-    margin-bottom: 0.5rem;
-    font-size: 0.9rem;
 }
 </style>
 """
@@ -241,24 +213,24 @@ def render_sidebar() -> dict:
             value=0.0,
             min_value=0.0,
             step=0.1,
-            help="Add a vertical reference line on the forest plot (e.g. 538.8 for E-C boundary). Set to 0 to disable.",
+            help="Add a vertical reference line on the forest plot. Set to 0 to disable.",
         )
         ref_label = st.text_input(
             "Reference label",
             value="",
-            placeholder="e.g. 538.8 Ma (E-C boundary)",
+            placeholder="e.g. 538.8 Ma",
         )
         ref_age_2 = st.number_input(
             "Second reference age (Ma)",
             value=0.0,
             min_value=0.0,
             step=0.1,
-            help="Optional second reference (e.g. CA-ID-TIMS age). Set to 0 to disable.",
+            help="Optional second reference with arrow annotation. Set to 0 to disable.",
         )
         ref_label_2 = st.text_input(
             "Second reference label",
             value="",
-            placeholder="e.g. CA-ID-TIMS 553.2 Ma",
+            placeholder="e.g. 553.2 Ma",
         )
 
         st.markdown("---")
@@ -287,57 +259,55 @@ def render_sidebar() -> dict:
 # ---------------------------------------------------------------------------
 
 def _init_grid():
-    """Ensure session_state has a grid DataFrame."""
-    if "grid_df" not in st.session_state or st.session_state.grid_df is None:
+    """Ensure session_state has grid data (2D list)."""
+    if "grid_data" not in st.session_state or st.session_state.grid_data is None:
         try:
-            st.session_state.grid_df = _df_to_lettered(parse_table(DEFAULT_EXAMPLE))
+            st.session_state.grid_data = _df_to_grid_data(parse_table(DEFAULT_EXAMPLE))
         except Exception:
-            st.session_state.grid_df = _make_empty_grid()
-    # Version counter used to force-reset the data_editor widget when the
-    # grid content is replaced programmatically (Defaults, Clear, Open).
+            st.session_state.grid_data = _make_empty_grid_data()
     if "grid_version" not in st.session_state:
         st.session_state.grid_version = 0
 
 
 def render_spreadsheet() -> Tuple[bool, Optional[pd.DataFrame]]:
     """
-    Render the Excel-like spreadsheet input area with toolbar.
+    Render the Handsontable spreadsheet input area with toolbar.
 
-    Returns (run_clicked, working_df) where working_df is the data with
-    original column headers restored (or None if grid is empty).
+    Returns (run_clicked, working_df) where working_df is a pandas DataFrame
+    with the original column headers restored (or None if grid is empty).
     """
     _init_grid()
 
     # ---- Input format help ----
     with st.expander("How to use the spreadsheet", expanded=False):
         st.markdown(
-            "1. **Paste from Excel**: Copy your data in Excel, click cell **A1** (or any cell) "
+            "1. **Paste from Excel**: Copy your data in Excel, click any cell "
             "in the grid below, and press **Ctrl+V**.  \n"
             "2. **Upload a file**: Click **Open** to upload CSV, TSV, or Excel files.  \n"
             "3. **Column layout**: Arrange data as alternating **age, sigma** column pairs. "
             "Row 1 should contain column header names.  \n"
             "4. **First age column**: Use the selector below the grid to indicate which "
             "column your age/sigma pairs start from.  \n"
-            "5. **Discordancy**: Apply discordancy filters (e.g. 10%) *before* pasting."
+            "5. **Filtering**: Apply filters (e.g., U<1000 ppm, exclude values with "
+            "\u00b2\u2070\u2076Pb/\u00b2\u2070\u2074Pb between 0 and 2000) *before* pasting.  \n"
+            "6. **Right-click** any cell for options: insert/remove rows and columns, "
+            "undo, redo, copy, cut, alignment, read-only."
         )
 
     # ---- File uploader (hidden by default, shown via Open button) ----
     if "show_uploader" not in st.session_state:
         st.session_state.show_uploader = False
 
-    # ---- Spreadsheet grid ----
-    # Use a versioned key so programmatic grid resets (Defaults, Clear, Open)
-    # actually take effect instead of being overridden by the old widget state.
-    grid_key = f"excel_like_grid_v{st.session_state.grid_version}"
-    st.caption("Excel-like input \u2014 click any cell to edit, paste from Excel, or use the toolbar below.")
-    st.session_state.grid_df = st.data_editor(
-        st.session_state.grid_df,
-        num_rows="dynamic",
-        use_container_width=True,
-        hide_index=False,
+    # ---- Handsontable grid ----
+    st.caption("Right-click for context menu \u2022 Paste from Excel \u2022 Columns A\u2013Z")
+    grid_key = f"hot_grid_v{st.session_state.grid_version}"
+    returned_data = handsontable_grid(
+        data=st.session_state.grid_data,
+        height=480,
         key=grid_key,
-        height=420,
     )
+    if returned_data is not None:
+        st.session_state.grid_data = returned_data
 
     # ---- File uploader (conditionally shown) ----
     if st.session_state.show_uploader:
@@ -353,7 +323,7 @@ def render_spreadsheet() -> Tuple[bool, Optional[pd.DataFrame]]:
                     raw = pd.read_excel(uploaded, engine="openpyxl")
                 else:
                     raw = pd.read_csv(uploaded, sep=None, engine="python")
-                st.session_state.grid_df = _df_to_lettered(raw)
+                st.session_state.grid_data = _df_to_grid_data(raw)
                 st.session_state.show_uploader = False
                 st.session_state.grid_version += 1
                 st.rerun()
@@ -366,13 +336,13 @@ def render_spreadsheet() -> Tuple[bool, Optional[pd.DataFrame]]:
 
     with c1:
         if st.button("Defaults", use_container_width=True, help="Load example data"):
-            st.session_state.grid_df = _df_to_lettered(parse_table(DEFAULT_EXAMPLE))
+            st.session_state.grid_data = _df_to_grid_data(parse_table(DEFAULT_EXAMPLE))
             st.session_state.grid_version += 1
             st.rerun()
 
     with c2:
         if st.button("Clear", use_container_width=True, help="Clear all data"):
-            st.session_state.grid_df = _make_empty_grid()
+            st.session_state.grid_data = _make_empty_grid_data()
             st.session_state.grid_version += 1
             st.rerun()
 
@@ -382,8 +352,7 @@ def render_spreadsheet() -> Tuple[bool, Optional[pd.DataFrame]]:
             st.rerun()
 
     with c4:
-        # Save: download current grid as CSV
-        working = _lettered_to_original(st.session_state.grid_df)
+        working = _grid_data_to_df(st.session_state.grid_data)
         csv_bytes = working.to_csv(index=False).encode("utf-8") if not working.empty else b""
         st.download_button(
             "Save",
@@ -403,15 +372,12 @@ def render_spreadsheet() -> Tuple[bool, Optional[pd.DataFrame]]:
         )
 
     with c6:
-        # PDF button handled in main app (needs the forest plot figure)
         if st.button("PDF", use_container_width=True, help="Export summary plot as PDF (after plotting)"):
             st.session_state["pdf_requested"] = True
 
     # ---- First-column selector ----
-    # Reuse the `working` DataFrame already computed for the Save button.
     if not working.empty and len(working.columns) > 0:
         col_options = list(range(len(working.columns)))
-        # Persist selection across reruns
         saved_idx = st.session_state.get("first_col_idx", 0)
         if saved_idx >= len(col_options):
             saved_idx = 0

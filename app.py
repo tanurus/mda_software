@@ -35,18 +35,17 @@ from ui_components import (
 # ---------------------------------------------------------------------------
 
 st.set_page_config(
-    page_title="MDA Web Calculator — Detrital Zircon",
+    page_title="MDA Web Calculator \u2014 Detrital Zircon",
     page_icon="\U0001f48e",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# Inject custom CSS
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
-# Unit conversion helpers (kept here to avoid circular imports)
+# Unit conversion helpers
 # ---------------------------------------------------------------------------
 
 def to_internal_sigma2_abs(ages: np.ndarray, sigma: np.ndarray, mode: str) -> np.ndarray:
@@ -84,7 +83,6 @@ def split_samples(
     cols = list(df.columns)
     if len(cols) < first_col_idx + 2:
         return out
-
     for i in range(first_col_idx, len(cols) - 1, pair_stride):
         age_col = cols[i]
         sig_col = cols[i + 1]
@@ -136,13 +134,8 @@ def summarize_metric(metric_name: str, result: Dict, output_mode: str) -> Dict:
 # MAIN APP
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Hero banner
 render_hero()
-
-# Sidebar settings
 cfg = render_sidebar()
-
-# Spreadsheet input + toolbar
 run_clicked, working_df = render_spreadsheet()
 
 # ---------------------------------------------------------------------------
@@ -150,9 +143,9 @@ run_clicked, working_df = render_spreadsheet()
 # ---------------------------------------------------------------------------
 
 summary_rows: list = []
+sample_results_cache: list = []  # (sample_name, ages, sigma2_abs, results)
 forest_fig = None
 
-# Also trigger computation if PDF was requested and we have cached results
 if run_clicked or st.session_state.get("pdf_requested"):
     if working_df is None or working_df.empty:
         if st.session_state.get("pdf_requested"):
@@ -174,14 +167,17 @@ if run_clicked or st.session_state.get("pdf_requested"):
     with st.expander("Parsed input preview", expanded=False):
         st.dataframe(working_df.head(40), use_container_width=True, height=260)
 
-    # ---- Per-sample results ----
+    # ════════════════════════════════════════════════════════════════════
+    # Phase 1: Per-sample results tables (NO individual plots yet)
+    # ════════════════════════════════════════════════════════════════════
     for sample_name, ages, sigma2_abs in samples:
         st.markdown(f"### Sample: **{sample_name}**")
 
         with st.spinner(f"Computing MDA methods for {sample_name}\u2026"):
             results = compute_all_metrics(ages, sigma2_abs)
 
-        # Build results table
+        sample_results_cache.append((sample_name, ages, sigma2_abs, results))
+
         rows = []
         for mname, res in results.items():
             s = summarize_metric(mname, res, cfg["out_mode"])
@@ -206,7 +202,6 @@ if run_clicked or st.session_state.get("pdf_requested"):
         table_df = pd.DataFrame(rows)
         st.dataframe(table_df, use_container_width=True, hide_index=True)
 
-        # Export buttons for this sample
         exp_a, exp_b = st.columns(2)
         with exp_a:
             st.download_button(
@@ -217,7 +212,6 @@ if run_clicked or st.session_state.get("pdf_requested"):
                 use_container_width=True,
             )
         with exp_b:
-            # Excel export
             buf = io.BytesIO()
             table_df.to_excel(buf, index=False, engine="openpyxl")
             st.download_button(
@@ -228,51 +222,9 @@ if run_clicked or st.session_state.get("pdf_requested"):
                 use_container_width=True,
             )
 
-        # ---- Individual plots ----
-        with st.expander(f"Individual grain plots \u2014 {sample_name}", expanded=True):
-            methods = list(results.keys())
-            selected = st.multiselect(
-                f"Methods to plot ({sample_name})",
-                methods,
-                default=["YSG", "YC2\u03c3", "YSP", "MLA", "YPP", "\u03c4"],
-                key=f"plot_{sample_name}",
-            )
-            for method in selected:
-                fig = make_publication_plot(ages, sigma2_abs, method, results[method], sample_name)
-                st.plotly_chart(fig, use_container_width=True)
-                pa, pb, pc = st.columns(3)
-                with pa:
-                    st.download_button(
-                        f"HTML",
-                        data=fig.to_html(include_plotlyjs="cdn").encode("utf-8"),
-                        file_name=f"{sample_name}_{method}_plot.html",
-                        mime="text/html",
-                        use_container_width=True,
-                    )
-                with pb:
-                    try:
-                        st.download_button(
-                            f"PNG",
-                            data=export_plot_png(fig),
-                            file_name=f"{sample_name}_{method}_plot.png",
-                            mime="image/png",
-                            use_container_width=True,
-                        )
-                    except Exception:
-                        st.caption("PNG export requires kaleido package")
-                with pc:
-                    try:
-                        st.download_button(
-                            f"PDF",
-                            data=export_plot_pdf(fig),
-                            file_name=f"{sample_name}_{method}_plot.pdf",
-                            mime="application/pdf",
-                            use_container_width=True,
-                        )
-                    except Exception:
-                        st.caption("PDF export requires kaleido package")
-
-    # ---- Forest plot (multi-sample summary) ----
+    # ════════════════════════════════════════════════════════════════════
+    # Phase 2: Forest plot (multi-sample summary) — ABOVE individual plots
+    # ════════════════════════════════════════════════════════════════════
     if summary_rows:
         st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
         st.markdown("### Multi-sample summary (forest plot)")
@@ -287,35 +239,9 @@ if run_clicked or st.session_state.get("pdf_requested"):
         )
         st.plotly_chart(forest_fig, use_container_width=True)
 
-        # Export row
+        # Export row — PDF first (most requested)
         e1, e2, e3, e4 = st.columns(4)
         with e1:
-            st.download_button(
-                "Summary CSV",
-                data=summary_df.to_csv(index=False).encode("utf-8"),
-                file_name="mda_summary_all_samples.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
-        with e2:
-            buf = io.BytesIO()
-            summary_df.to_excel(buf, index=False, engine="openpyxl")
-            st.download_button(
-                "Summary Excel",
-                data=buf.getvalue(),
-                file_name="mda_summary_all_samples.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
-        with e3:
-            st.download_button(
-                "Forest plot HTML",
-                data=forest_fig.to_html(include_plotlyjs="cdn").encode("utf-8"),
-                file_name="mda_summary_plot.html",
-                mime="text/html",
-                use_container_width=True,
-            )
-        with e4:
             try:
                 st.download_button(
                     "Forest plot PDF",
@@ -325,25 +251,88 @@ if run_clicked or st.session_state.get("pdf_requested"):
                     use_container_width=True,
                 )
             except Exception:
-                st.caption("PDF export requires kaleido package")
+                st.caption("PDF export requires kaleido + Chrome")
+        with e2:
+            st.download_button(
+                "Forest plot HTML",
+                data=forest_fig.to_html(include_plotlyjs="cdn").encode("utf-8"),
+                file_name="mda_summary_plot.html",
+                mime="text/html",
+                use_container_width=True,
+            )
+        with e3:
+            st.download_button(
+                "Summary CSV",
+                data=summary_df.to_csv(index=False).encode("utf-8"),
+                file_name="mda_summary_all_samples.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+        with e4:
+            buf = io.BytesIO()
+            summary_df.to_excel(buf, index=False, engine="openpyxl")
+            st.download_button(
+                "Summary Excel",
+                data=buf.getvalue(),
+                file_name="mda_summary_all_samples.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
 
-        # Handle deferred PDF button from toolbar
+        # Handle toolbar PDF button
         if st.session_state.get("pdf_requested") and forest_fig is not None:
-            try:
-                pdf_bytes = export_plot_pdf(
-                    forest_fig,
-                    width=1600,
-                    height=max(600, 100 + 80 * len(summary_df["Sample"].unique())),
-                )
-                st.download_button(
-                    "Download forest plot PDF",
-                    data=pdf_bytes,
-                    file_name="mda_forest_plot.pdf",
-                    mime="application/pdf",
-                )
-            except Exception:
-                st.warning("PDF export requires the `kaleido` package. Install it with: `pip install kaleido`")
             st.session_state["pdf_requested"] = False
+
+    # ════════════════════════════════════════════════════════════════════
+    # Phase 3: Individual grain plots — BELOW forest plot
+    # ════════════════════════════════════════════════════════════════════
+    if sample_results_cache:
+        st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
+        st.markdown("### Individual grain plots")
+
+        for sample_name, ages, sigma2_abs, results in sample_results_cache:
+            with st.expander(f"Grain plots \u2014 {sample_name}", expanded=False):
+                methods = list(results.keys())
+                selected = st.multiselect(
+                    f"Methods to plot ({sample_name})",
+                    methods,
+                    default=["YSG", "YC2\u03c3", "YSP", "MLA", "YPP", "\u03c4"],
+                    key=f"plot_{sample_name}",
+                )
+                for method in selected:
+                    fig = make_publication_plot(ages, sigma2_abs, method, results[method], sample_name)
+                    st.plotly_chart(fig, use_container_width=True)
+                    pa, pb, pc = st.columns(3)
+                    with pa:
+                        st.download_button(
+                            "HTML",
+                            data=fig.to_html(include_plotlyjs="cdn").encode("utf-8"),
+                            file_name=f"{sample_name}_{method}_plot.html",
+                            mime="text/html",
+                            use_container_width=True,
+                        )
+                    with pb:
+                        try:
+                            st.download_button(
+                                "PNG",
+                                data=export_plot_png(fig),
+                                file_name=f"{sample_name}_{method}_plot.png",
+                                mime="image/png",
+                                use_container_width=True,
+                            )
+                        except Exception:
+                            st.caption("PNG export requires kaleido")
+                    with pc:
+                        try:
+                            st.download_button(
+                                "PDF",
+                                data=export_plot_pdf(fig),
+                                file_name=f"{sample_name}_{method}_plot.pdf",
+                                mime="application/pdf",
+                                use_container_width=True,
+                            )
+                        except Exception:
+                            st.caption("PDF export requires kaleido")
 
 # ---------------------------------------------------------------------------
 # Method reference (collapsible)
@@ -364,9 +353,5 @@ with st.expander("MDA method descriptions", expanded=False):
 | **YPP** | Youngest Probability Peak | Youngest KDE peak age |
 | **\u03c4** | Tau Method | Weighted mean of youngest PDP peak cluster |
 """)
-
-# ---------------------------------------------------------------------------
-# Footer
-# ---------------------------------------------------------------------------
 
 render_footer()

@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/handsontable@14.6.1/dist/handsontable.full.min.css" />
+  <script src="https://cdn.jsdelivr.net/npm/handsontable@14.6.1/dist/handsontable.full.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; }
+    #hot-container { width: 100%; }
+    /* Tighter rows for a scientific-data feel */
+    .handsontable td, .handsontable th { font-size: 12px; }
+    .handsontable .htDimmed { color: #94a3b8; }
+  </style>
+</head>
+<body>
+  <div id="hot-container"></div>
+
+  <script>
+    /* ================================================================
+       Minimal Streamlit Component Protocol (HTML-only, no React)
+       ================================================================
+       Streamlit communicates with iframed components via postMessage.
+       We implement the three required signals:
+         1. streamlit:componentReady  – tell Streamlit we exist
+         2. streamlit:setFrameHeight  – request iframe height
+         3. streamlit:setComponentValue – send data back to Python
+       Streamlit sends us:
+         - streamlit:render  – with args & theme
+       ================================================================ */
+
+    const Streamlit = {
+      /** Tell Streamlit the component is ready to receive render events. */
+      setComponentReady() {
+        window.parent.postMessage({ type: "streamlit:componentReady", apiVersion: 1 }, "*");
+      },
+
+      /** Request a specific iframe height. */
+      setFrameHeight(height) {
+        window.parent.postMessage({ type: "streamlit:setFrameHeight", height: height }, "*");
+      },
+
+      /** Send a value back to the Python component wrapper. */
+      setComponentValue(value) {
+        window.parent.postMessage({ type: "streamlit:setComponentValue", value: value }, "*");
+      },
+
+      /** Placeholder – Streamlit passes theme info we currently ignore. */
+      RENDER_EVENT: "streamlit:render",
+    };
+
+    /* ── State ─────────────────────────────────────────────── */
+    let hot = null;          // Handsontable instance
+    let debounceTimer = null;
+    let currentHeight = 500;
+
+    /** Debounced send – avoids flooding Streamlit on rapid edits. */
+    function sendData() {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        if (hot) {
+          Streamlit.setComponentValue(hot.getData());
+        }
+      }, 150);
+    }
+
+    /** Handle render events from Streamlit. */
+    function onRender(event) {
+      const args = event.detail ? event.detail.args : (event.data ? event.data.args : null);
+      if (!args) return;
+
+      const data = args.data || [[]];
+      currentHeight = args.height || 500;
+
+      if (!hot) {
+        hot = new Handsontable(document.getElementById("hot-container"), {
+          data: JSON.parse(JSON.stringify(data)),  // deep copy
+          minRows: 100,
+          minCols: 26,
+          rowHeaders: true,
+          colHeaders: true,
+          contextMenu: {
+            items: {
+              "row_above": { name: "Insert row above" },
+              "row_below": { name: "Insert row below" },
+              "col_left":  { name: "Insert column left" },
+              "col_right": { name: "Insert column right" },
+              "separator1": Handsontable.plugins.ContextMenu.SEPARATOR,
+              "remove_row": { name: "Remove row(s)" },
+              "remove_col": { name: "Remove column(s)" },
+              "separator2": Handsontable.plugins.ContextMenu.SEPARATOR,
+              "undo":       { name: "Undo" },
+              "redo":       { name: "Redo" },
+              "separator3": Handsontable.plugins.ContextMenu.SEPARATOR,
+              "make_read_only": { name: "Read only" },
+              "alignment":  {},
+              "separator4": Handsontable.plugins.ContextMenu.SEPARATOR,
+              "copy":       { name: "Copy" },
+              "cut":        { name: "Cut" },
+            }
+          },
+          manualColumnResize: true,
+          manualRowResize: true,
+          outsideClickDeselects: false,
+          selectionMode: "range",
+          undo: true,
+          wordWrap: false,
+          autoWrapRow: true,
+          autoWrapCol: true,
+          height: currentHeight,
+          stretchH: "all",
+          licenseKey: "non-commercial-and-evaluation",
+
+          /* Send data on any structural change */
+          afterChange:    function(changes, src) { if (src !== "loadData") sendData(); },
+          afterCreateRow: sendData,
+          afterRemoveRow: sendData,
+          afterCreateCol: sendData,
+          afterRemoveCol: sendData,
+          afterUndo:      sendData,
+          afterRedo:      sendData,
+          afterPaste:     sendData,
+        });
+      } else {
+        /* On subsequent renders only reload if Streamlit passes new data
+           (e.g. user clicked Defaults / Clear / Open). */
+        hot.loadData(JSON.parse(JSON.stringify(data)));
+      }
+
+      Streamlit.setFrameHeight(currentHeight);
+    }
+
+    /* ── Listen for Streamlit render messages ─────────────── */
+    window.addEventListener("message", (event) => {
+      if (event.data && event.data.type === "streamlit:render") {
+        /* Wrap in the shape onRender expects */
+        onRender({ detail: { args: event.data.args } });
+      }
+    });
+
+    /* Signal readiness */
+    Streamlit.setComponentReady();
+    Streamlit.setFrameHeight(currentHeight);
+  </script>
+</body>
+</html>

@@ -12,22 +12,28 @@ import plotly.graph_objects as go
 
 FONT_FAMILY = "Arial, Helvetica, sans-serif"
 
+# Matplotlib reference mapping:  "D"->diamond, "v"->triangle-down, "s"->square,
+# "^"->triangle-up, "P"->cross, "X"->x, "."->circle(small), "p"->pentagon,
+# "*"->star, "o"->circle-open.  Colors match the user's publication palette.
+
+METHOD_ORDER = ["YSG", "YSP", "YC1\u03c3", "YC2\u03c3", "Y3Za", "Y3Zo_2\u03c3", "YDZ", "YPP", "\u03c4", "MLA"]
+
 METHOD_STYLE: Dict[str, Dict] = {
-    "YSG":     {"symbol": "star",            "color": "#e67e22", "size": 12},
-    "YDZ":     {"symbol": "pentagon-open",    "color": "#2980b9", "size": 11},
-    "YC1\u03c3":  {"symbol": "triangle-up",  "color": "#27ae60", "size": 11},
-    "YC2\u03c3":  {"symbol": "square",       "color": "#27ae60", "size": 10},
-    "Y3Za":    {"symbol": "circle",          "color": "#7f8c8d", "size": 10},
-    "Y3Zo_2\u03c3": {"symbol": "triangle-down-open", "color": "#8e44ad", "size": 11},
-    "YSP":     {"symbol": "diamond",         "color": "#e74c3c", "size": 11},
-    "MLA":     {"symbol": "hexagon2",        "color": "#0097a7", "size": 11},
-    "YPP":     {"symbol": "circle-open",     "color": "#0f766e", "size": 11},
-    "\u03c4":  {"symbol": "star-diamond",    "color": "#d4a017", "size": 12},
+    "YSG":          {"symbol": "diamond",       "color": "#EE6677", "filled": True,  "size": 9},
+    "YSP":          {"symbol": "triangle-down", "color": "#AA3377", "filled": False, "size": 9},
+    "YC1\u03c3":    {"symbol": "square",        "color": "#228833", "filled": True,  "size": 8},
+    "YC2\u03c3":    {"symbol": "triangle-up",   "color": "#66CCEE", "filled": False, "size": 9},
+    "Y3Za":         {"symbol": "cross",         "color": "#CCBB44", "filled": True,  "size": 10},
+    "Y3Zo_2\u03c3": {"symbol": "x",            "color": "#BBBBBB", "filled": True,  "size": 10},
+    "YDZ":          {"symbol": "circle",        "color": "#333333", "filled": True,  "size": 6},
+    "YPP":          {"symbol": "pentagon",      "color": "#4477AA", "filled": False, "size": 9},
+    "\u03c4":       {"symbol": "star",          "color": "#EE7733", "filled": True,  "size": 12},
+    "MLA":          {"symbol": "circle-open",   "color": "#009988", "filled": False, "size": 9},
 }
 
 BAND_COLORS = [
-    "rgba(219,234,254,0.38)",  # light blue
-    "rgba(255,255,255,0)",     # transparent
+    "rgba(244,244,244,0.6)",  # light grey (matches reference)
+    "rgba(255,255,255,0)",    # transparent
 ]
 
 
@@ -39,9 +45,7 @@ def method_interval(result: Dict, metric_name: str) -> Tuple[Optional[float], Op
     """Extract (mid, lo, hi) from a metric result dict."""
     if metric_name == "YDZ":
         mid = result.get("median")
-        lo = result.get("p2_5")
-        hi = result.get("p97_5")
-        return mid, lo, hi
+        return mid, None, None  # single point, no error bars
     if metric_name == "YPP":
         mid = result.get("peak_age")
         return mid, None, None
@@ -207,7 +211,11 @@ def make_forest_plot(
     n_samples = len(samples)
     sample_to_y = {s: i for i, s in enumerate(samples)}
 
-    plotted_methods = [m for m in summary_df["Method"].unique() if m is not None]
+    # Use canonical order; only include methods actually present in data
+    all_methods = summary_df["Method"].unique()
+    plotted_methods = [m for m in METHOD_ORDER if m in all_methods]
+    # Append any methods not in METHOD_ORDER (future-proofing)
+    plotted_methods += [m for m in all_methods if m not in plotted_methods and m is not None]
     n_methods = len(plotted_methods)
 
     fig = go.Figure()
@@ -237,7 +245,8 @@ def make_forest_plot(
         if sub.empty:
             continue
 
-        style = METHOD_STYLE.get(method, {"symbol": "circle", "color": "#555", "size": 9})
+        style = METHOD_STYLE.get(method, {"symbol": "circle", "color": "#555", "size": 9, "filled": True})
+        filled = style.get("filled", True)
 
         # Jitter offset to avoid overlapping markers within a sample band
         jitter = (mi - n_methods / 2.0) * 0.042
@@ -246,6 +255,10 @@ def make_forest_plot(
 
         err_plus = (sub["Upper (Ma)"] - sub["Age (Ma)"]).fillna(0).clip(lower=0).to_numpy()
         err_minus = (sub["Age (Ma)"] - sub["Lower (Ma)"]).fillna(0).clip(lower=0).to_numpy()
+
+        # Filled vs open markers (matching matplotlib reference)
+        marker_color = style["color"] if filled else "white"
+        marker_edge = style["color"]
 
         fig.add_trace(
             go.Scatter(
@@ -256,8 +269,8 @@ def make_forest_plot(
                 marker=dict(
                     symbol=style["symbol"],
                     size=style["size"],
-                    color=style["color"],
-                    line=dict(width=1.0, color="#1e293b"),
+                    color=marker_color,
+                    line=dict(width=1.0, color=marker_edge),
                 ),
                 error_x=dict(
                     type="data",
@@ -265,7 +278,7 @@ def make_forest_plot(
                     array=err_plus,
                     arrayminus=err_minus,
                     visible=True,
-                    thickness=1.6,
+                    thickness=1.0,
                     color=style["color"],
                 ),
                 hovertemplate=(
@@ -375,7 +388,9 @@ def make_forest_plot(
     fig.update_xaxes(
         title=dict(text="<b>Age (Ma)</b>", font=dict(size=13)),
         showgrid=True,
-        gridcolor="rgba(148,163,184,0.25)",
+        gridcolor="rgba(148,163,184,0.30)",
+        griddash="dot",
+        dtick=10,
         zeroline=False,
         tickfont=dict(size=11),
         range=[x_lo, x_hi],
