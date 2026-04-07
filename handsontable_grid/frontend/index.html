@@ -33,20 +33,28 @@
     const Streamlit = {
       /** Tell Streamlit the component is ready to receive render events. */
       setComponentReady() {
-        window.parent.postMessage({ type: "streamlit:componentReady", apiVersion: 1 }, "*");
+        window.parent.postMessage(
+          { isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1 },
+          "*"
+        );
       },
 
       /** Request a specific iframe height. */
       setFrameHeight(height) {
-        window.parent.postMessage({ type: "streamlit:setFrameHeight", height: height }, "*");
+        window.parent.postMessage(
+          { isStreamlitMessage: true, type: "streamlit:setFrameHeight", height: height },
+          "*"
+        );
       },
 
       /** Send a value back to the Python component wrapper. */
       setComponentValue(value) {
-        window.parent.postMessage({ type: "streamlit:setComponentValue", value: value }, "*");
+        window.parent.postMessage(
+          { isStreamlitMessage: true, type: "streamlit:setComponentValue", value: value },
+          "*"
+        );
       },
 
-      /** Placeholder – Streamlit passes theme info we currently ignore. */
       RENDER_EVENT: "streamlit:render",
     };
 
