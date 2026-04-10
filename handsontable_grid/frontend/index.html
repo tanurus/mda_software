@@ -131,9 +131,11 @@
           afterPaste:     sendData,
         });
       } else {
-        /* On subsequent renders only reload if Streamlit passes new data
-           (e.g. user clicked Defaults / Clear / Open). */
-        hot.loadData(JSON.parse(JSON.stringify(data)));
+        /* When hot already exists, do NOT reload data from Streamlit.
+           The component owns the data — user edits are authoritative.
+           Programmatic resets (Defaults/Clear/Open) use a new widget key,
+           which destroys this component and creates a fresh one (hot=null),
+           so data is loaded correctly on the first render above. */
       }
 
       Streamlit.setFrameHeight(currentHeight);

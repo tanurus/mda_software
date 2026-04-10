@@ -256,9 +256,10 @@ def make_forest_plot(
         err_plus = (sub["Upper (Ma)"] - sub["Age (Ma)"]).fillna(0).clip(lower=0).to_numpy()
         err_minus = (sub["Age (Ma)"] - sub["Lower (Ma)"]).fillna(0).clip(lower=0).to_numpy()
 
-        # Filled vs open markers (matching matplotlib reference)
-        marker_color = style["color"] if filled else "white"
+        # Filled vs open markers — NEVER use white (invisible on white bg).
+        # Open markers get a light tint of their method color.
         marker_edge = style["color"]
+        marker_color = style["color"] if filled else _hex_to_rgba(style["color"], 0.18)
 
         fig.add_trace(
             go.Scatter(
