@@ -215,42 +215,126 @@ def mda_tau(ages: np.ndarray, sigma2_abs: np.ndarray, max_age: float = 600, grid
     }
 
 
-def mda_mla(ages: np.ndarray, max_age: float = 600) -> Dict:
-    """Approximate IsoplotR-style youngest component using Gaussian mixture model with BIC selection."""
-    from sklearn.mixture import GaussianMixture
+def mda_mla(ages: np.ndarray, sigma2_abs: np.ndarray, max_age: float = 600) -> Dict:
+    """
+    Minimum age model following Vermeesch (2021) and Galbraith (2005).
 
-    a = ages[ages < max_age]
+    Fits a two-component mixture in log-age space:
+      1. Point mass at minimum age  tm = exp(γ)  with proportion π
+      2. Truncated normal (z > γ) for older grains, convolved with
+         measurement error
+
+    Uses the 3-parameter model (γ = μ) recommended for numerical
+    stability with typical detrital-zircon datasets.
+
+    The log-likelihood per grain j is:
+
+        L_j = π · φ((z_j − γ)/s_j)/s_j
+            + (1−π) · φ((z_j − μ)/τ_j)/τ_j · Φ((m_j − γ)/v_j) / Φ((μ − γ)/σ)
+
+    where  z_j = ln(t_j),  s_j = σ_j/t_j  (radial-plot transform),
+           τ_j = √(σ² + s_j²),
+           m_j = (σ²·z_j + s_j²·μ) / τ_j²,
+           v_j = σ·s_j / τ_j.
+
+    Standard error of γ is obtained from the numerical Hessian;
+    age uncertainty via the delta method: se(t_m) = t_m · se(γ).
+    """
+    from scipy.optimize import minimize
+    from scipy.stats import norm
+
+    mask = ages < max_age
+    a = ages[mask]
+    s1 = _to_1sigma(sigma2_abs[mask])
+
     if len(a) < 5:
-        return {"abbrev": "MLA", "age": None, "reason": "Need at least 5 grains below max_age"}
+        return {"abbrev": "MLA", "age": None, "reason": "Need \u22655 grains below max_age"}
 
-    X = a.reshape(-1, 1)
-    candidates = []
-    max_k = min(6, len(a) - 1)
-    for k in range(1, max_k + 1):
-        model = GaussianMixture(n_components=k, random_state=0)
-        model.fit(X)
-        bic = model.bic(X)
-        means = np.sort(model.means_.flatten())
-        youngest = float(means[0])
-        candidates.append((bic, k, youngest))
+    # ── Radial-plot transform ────────────────────────────────────────
+    zj = np.log(a)
+    sj = s1 / a                          # se(log t) ≈ σ/t
 
-    bic, best_k, youngest = sorted(candidates, key=lambda r: r[0])[0]
+    # ── Negative log-likelihood (3-param: γ = μ) ─────────────────────
+    def neg_loglik(params):
+        gamma = params[0]
+        sigma = np.exp(params[1])         # ensure σ > 0
+        pi_val = 1.0 / (1.0 + np.exp(-params[2]))  # sigmoid → (0,1)
 
-    # Re-fit best model to extract covariance of the youngest component
-    best_model = GaussianMixture(n_components=best_k, random_state=0)
-    best_model.fit(X)
-    youngest_idx = int(np.argmin(best_model.means_.flatten()))
-    youngest_std = float(np.sqrt(best_model.covariances_[youngest_idx].flatten()[0]))
+        mu = gamma                         # 3-parameter constraint
+
+        # Component 1: point mass at minimum age
+        f1 = norm.pdf(zj, loc=gamma, scale=sj)
+
+        # Component 2: truncated-normal convolved with measurement error
+        tau = np.sqrt(sigma**2 + sj**2)
+        m = (sigma**2 * zj + sj**2 * mu) / tau**2
+        v = sigma * sj / tau
+
+        # Φ((μ−γ)/σ) = Φ(0) = 0.5  when μ = γ  (3-param model)
+        trunc_num = norm.cdf((m - gamma) / np.maximum(v, 1e-15))
+        f2 = norm.pdf(zj, loc=mu, scale=tau) * trunc_num / 0.5
+
+        # Mixture
+        f = pi_val * f1 + (1.0 - pi_val) * f2
+        return -np.sum(np.log(np.maximum(f, 1e-300)))
+
+    # ── Optimise from multiple starting points ───────────────────────
+    best = None
+    sorted_z = np.sort(zj)
+    starts = [
+        (sorted_z[0],                np.log(max(np.std(zj), 0.01)), -2.0),
+        (sorted_z[min(2, len(a)-1)], np.log(max(np.std(zj)*0.5, 0.01)), -1.0),
+        (np.mean(zj[:3]),            np.log(max(np.std(zj)*1.5, 0.01)), -3.0),
+    ]
+    for x0 in starts:
+        try:
+            res = minimize(
+                neg_loglik, np.array(x0), method="Nelder-Mead",
+                options={"maxiter": 15000, "xatol": 1e-10, "fatol": 1e-10},
+            )
+            if best is None or res.fun < best.fun:
+                best = res
+        except Exception:
+            continue
+
+    if best is None or not best.success and best.fun > 1e30:
+        return {"abbrev": "MLA", "age": None, "reason": "Optimisation failed"}
+
+    gamma_hat = best.x[0]
+    sigma_hat = float(np.exp(best.x[1]))
+    pi_hat = float(1.0 / (1.0 + np.exp(-best.x[2])))
+    age_mla = float(np.exp(gamma_hat))
+
+    # ── Standard error via numerical Hessian ─────────────────────────
+    age_2sigma = None
+    try:
+        eps = 1e-5
+        n_p = len(best.x)
+        H = np.zeros((n_p, n_p))
+        for i in range(n_p):
+            for j in range(i, n_p):
+                xpp = best.x.copy(); xpp[i] += eps; xpp[j] += eps
+                xpm = best.x.copy(); xpm[i] += eps; xpm[j] -= eps
+                xmp = best.x.copy(); xmp[i] -= eps; xmp[j] += eps
+                xmm = best.x.copy(); xmm[i] -= eps; xmm[j] -= eps
+                H[i, j] = (neg_loglik(xpp) - neg_loglik(xpm)
+                            - neg_loglik(xmp) + neg_loglik(xmm)) / (4 * eps * eps)
+                H[j, i] = H[i, j]
+        cov = np.linalg.inv(H)
+        se_gamma = float(np.sqrt(max(cov[0, 0], 0)))
+        # Delta method: se(exp(γ)) = exp(γ) · se(γ)
+        age_2sigma = float(2.0 * age_mla * se_gamma)
+    except (np.linalg.LinAlgError, ValueError):
+        pass
 
     return {
         "abbrev": "MLA",
-        "age": youngest,
-        "age_2sigma": float(2 * youngest_std),
-        "components": int(best_k),
-        "bic": float(bic),
+        "age": age_mla,
+        "age_2sigma": age_2sigma,
+        "pi": pi_hat,
+        "sigma": sigma_hat,
         "N": int(len(a)),
-        "used_n": int(len(a)),
-        "note": "GMM-BIC approximation to IsoplotR youngest component",
+        "note": "Minimum age model (Vermeesch 2021, 3-param)",
     }
 
 
@@ -263,7 +347,7 @@ def compute_all_metrics(ages: np.ndarray, sigma2_abs: np.ndarray) -> Dict[str, D
         "Y3Za": mda_y3za(ages, sigma2_abs),
         "Y3Zo_2σ": mda_y3zo_2sigma(ages, sigma2_abs),
         "YSP": mda_ysp(ages, sigma2_abs),
-        "MLA": mda_mla(ages),
+        "MLA": mda_mla(ages, sigma2_abs),
         "YPP": mda_ypp(ages),
         "τ": mda_tau(ages, sigma2_abs),
     }
